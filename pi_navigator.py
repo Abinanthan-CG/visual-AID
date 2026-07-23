@@ -6,6 +6,73 @@ import pyttsx3
 import argparse
 import os
 
+
+# --- LAYERED ENVIRONMENT DETECTORS (for surfaces YOLO cannot classify) ---
+
+def detect_wall(frame_bgr):
+    """
+    Detects wall-like flat surfaces using texture analysis.
+    Walls have low pixel variance (smooth, uniform) and cover large frame areas.
+    """
+    h, w = frame_bgr.shape[:2]
+    strip = frame_bgr[int(h*0.3):int(h*0.9), int(w*0.2):int(w*0.8)]
+    gray_strip = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+    if np.mean(gray_strip) < 20:
+        return None
+    _, std_dev = cv2.meanStdDev(gray_strip)
+    global_std = std_dev[0][0]
+    cell_h = max(1, strip.shape[0] // 4)
+    cell_w = max(1, strip.shape[1] // 4)
+    uniform_cells = 0
+    for i in range(4):
+        for j in range(4):
+            cell = gray_strip[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+            if cell.size == 0:
+                continue
+            _, cell_std = cv2.meanStdDev(cell)
+            if cell_std[0][0] < 30:
+                uniform_cells += 1
+    uniform_ratio = uniform_cells / 16.0
+    if uniform_ratio > 0.70 and global_std < 35:
+        return "VERY_CLOSE"
+    elif uniform_ratio > 0.50 and global_std < 50:
+        return "CLOSE"
+    return None
+
+
+def detect_vegetation(frame_bgr):
+    """
+    Detects trees, bushes, and grass using HSV green-range masking.
+    """
+    h, w = frame_bgr.shape[:2]
+    cx1, cx2 = int(w*0.2), int(w*0.8)
+    cy1, cy2 = int(h*0.1), int(h*0.9)
+    center = frame_bgr[cy1:cy2, cx1:cx2]
+    hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+    lower_green = np.array([35, 40, 40])
+    upper_green = np.array([85, 255, 255])
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    green_ratio = np.count_nonzero(mask) / float(mask.size)
+    if green_ratio > 0.50:
+        return "CLOSE"
+    elif green_ratio > 0.20:
+        return "MEDIUM"
+    return None
+
+
+def detect_environment(frame_bgr):
+    """
+    Multi-layered fallback detector. Priority: wall > vegetation.
+    Returns (label, dist_level) or None.
+    """
+    wall_dist = detect_wall(frame_bgr)
+    if wall_dist:
+        return ("wall", wall_dist)
+    veg_dist = detect_vegetation(frame_bgr)
+    if veg_dist:
+        return ("tree", veg_dist)
+    return None
+
 # --- HARDWARE ABSTRACTION LAYER ---
 try:
     from picamera2 import Picamera2
@@ -123,7 +190,17 @@ class NavigatorPi:
                             speech = f"A {label} is blocking the center. {dir_hint}"
                         else:
                             speech = f"I see a {label} on your {zone}."
-                    
+                    else:
+                        # No YOLO detections — try environment heuristics
+                        env = detect_environment(frame)
+                        if env:
+                            env_label, env_dist = env
+                            if env_dist == "VERY_CLOSE":
+                                speech = f"Warning! {env_label} directly ahead, very close. Stop."
+                            elif env_dist == "CLOSE":
+                                speech = f"Warning! {env_label} ahead, close."
+                            else:
+                                speech = f"{env_label.capitalize()} nearby ahead."
                     print(f"[NAV] {speech}")
                     self.speak(speech)
                     self.last_speech_time = current_time

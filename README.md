@@ -2,7 +2,7 @@
 
 ![VisionAid Premium Banner](./assets/banner.png)
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_svg.svg)](https://visionaid.streamlit.app/)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_svg.svg)](https://seeing-with-sound.streamlit.app/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **VisionAid** is a state-of-the-art navigation assistant designed to empower visually impaired individuals by converting real-time environmental data into intuitive spatial audio cues and haptic feedback. Built with a focus on **low-latency performance** and **accessibility**, VisionAid transforms any modern smartphone or laptop into a wearable autonomous navigator.
@@ -47,9 +47,9 @@
 
 ### 🌐 Cloud Access
 
-The fastest way to experience VisionAid is via our livedeploy:
+The fastest way to experience VisionAid is via our live deploy:
 
-👉 **[Launch VisionAid on Streamlit Cloud](https://visionaid.streamlit.app/)**
+👉 **[Launch VisionAid on Streamlit Cloud](https://seeing-with-sound.streamlit.app/)**
 
 ### 💻 Local Installation
 

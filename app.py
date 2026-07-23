@@ -85,6 +85,9 @@ LANGUAGES = {
         "dark": "Environment too dark",
         "started": "VisionAid navigation started",
         "obstacle": "Obstacle ahead",
+        "move_left": "Move left",
+        "move_right": "Move right",
+        "both_blocked": "Proceed with caution",
     },
     "Tamil": {
         "code": "ta-IN",
@@ -99,6 +102,9 @@ LANGUAGES = {
         "dark": "சூழல் மிகவும் இருட்டாக உள்ளது",
         "started": "விஷன்எய்ட் தொடங்கியது",
         "obstacle": "தடை முன்னால்",
+        "move_left": "இடதுபுறம் செல்லுங்கள்",
+        "move_right": "வலதுபுறம் செல்லுங்கள்",
+        "both_blocked": "கவனமாக செல்லுங்கள்",
     },
     "Hindi": {
         "code": "hi-IN",
@@ -113,6 +119,9 @@ LANGUAGES = {
         "dark": "वातावरण बहुत अंधेरा है",
         "started": "VisionAid शुरू हो गया",
         "obstacle": "बाधा आगे",
+        "move_left": "बाईं तरफ जाएं",
+        "move_right": "दाईं तरफ जाएं",
+        "both_blocked": "सावधानी से आगे बढ़ें",
     }
 }
 
@@ -136,6 +145,8 @@ OBJECT_TRANSLATIONS = {
         "couch": "சோபா", "potted plant": "தாவரம்",
         "sink": "கழுவுதொட்டி", "refrigerator": "குளிர்சாதனப்பெட்டி",
         "scissors": "கத்தரிக்கோல்", "vase": "பூச்சட்டி",
+        # Environment labels (non-COCO, detected via CV heuristics)
+        "wall": "சுவர்", "tree": "மரம்", "obstacle": "தடை",
     },
     "Hindi": {
         "person": "व्यक्ति", "car": "कार", "truck": "ट्रक",
@@ -156,6 +167,8 @@ OBJECT_TRANSLATIONS = {
         "couch": "सोफ़ा", "potted plant": "पौधा",
         "sink": "नल", "refrigerator": "फ्रिज",
         "scissors": "कैंची", "vase": "फूलदान",
+        # Environment labels (non-COCO, detected via CV heuristics)
+        "wall": "दीवार", "tree": "पेड़", "obstacle": "बाधा",
     }
 }
 
@@ -168,6 +181,8 @@ if "frame_count" not in st.session_state: st.session_state.frame_count = 0
 if "det_count" not in st.session_state: st.session_state.det_count = 0
 if "ui_msg" not in st.session_state: st.session_state.ui_msg = "START NAVIGATION to begin"
 if "ui_msg_class" not in st.session_state: st.session_state.ui_msg_class = "status-clear"
+if "last_dir_key" not in st.session_state: st.session_state.last_dir_key = ""  # direction+label fingerprint
+if "last_dir_time" not in st.session_state: st.session_state.last_dir_time = 0
 
 # --- INJECT HAPTIC ARM BUTTON & POLLING LOOP ---
 components.html(f"""
@@ -243,32 +258,54 @@ def translate_label(label, language):
     if language == "English": return label
     return OBJECT_TRANSLATIONS.get(language, {}).get(label, label)
 
-def trigger_voice_and_haptic(text, dist_level="FAR"):
-    # [FIX 5] Debounce optimization
-    DEBOUNCE_MS = 1500
-    urgent_debounce = 800
-    now = time.time() * 1000
-    
-    current_debounce = urgent_debounce if dist_level == "VERY_CLOSE" else DEBOUNCE_MS
-    
-    if text == st.session_state.last_spoken and (now - st.session_state.last_speak_time) < current_debounce:
+def trigger_voice_and_haptic(text, dist_level="FAR", dir_key=""):
+    """Speak text with smart multi-layer debouncing to prevent audio spam."""
+    # Guard: never speak empty or whitespace-only strings
+    if not text or not text.strip():
         return
-        
-    st.session_state.last_spoken = text
+    # Sanitize: remove apostrophes that would break JS string literals
+    safe_text = text.replace("'", "").replace('"', '')
+
+    now = time.time() * 1000
+
+    # Layer 1 — Global floor: minimum 700ms between ANY speech call
+    MIN_ANY_MS = 700
+    if (now - st.session_state.last_speak_time) < MIN_ANY_MS:
+        return
+
+    # Layer 2 — Direction-key debounce: suppress if same direction+label within 2.5s
+    # This stops "car on your right, close" / "car on your right, nearby" spam
+    DIR_DEBOUNCE_MS = 2500
+    if dir_key and dir_key == st.session_state.last_dir_key:
+        if (now - st.session_state.last_dir_time) < DIR_DEBOUNCE_MS:
+            return
+
+    # Layer 3 — Exact text debounce
+    DEBOUNCE_MS = 2000
+    URGENT_DEBOUNCE_MS = 800
+    current_debounce = URGENT_DEBOUNCE_MS if dist_level == "VERY_CLOSE" else DEBOUNCE_MS
+    if safe_text == st.session_state.last_spoken and (now - st.session_state.last_speak_time) < current_debounce:
+        return
+
+    # Commit
+    st.session_state.last_spoken = safe_text
     st.session_state.last_speak_time = now
-    
+    if dir_key:
+        st.session_state.last_dir_key = dir_key
+        st.session_state.last_dir_time = now
+
     # Haptic Pattern for JS
     vib_pattern = "[150]"
     if dist_level == "VERY_CLOSE": vib_pattern = "[100, 50, 100, 50, 100]"
     elif dist_level == "CLOSE": vib_pattern = "[200, 100, 200]"
     elif dist_level == "MEDIUM": vib_pattern = "[300]"
-    
+
     components.html(f"""
         <script>
         if (window.parent.window.currentVibrationPattern !== undefined) {{
             window.parent.window.currentVibrationPattern = {vib_pattern};
         }}
-        var msg = new SpeechSynthesisUtterance('{text}');
+        var msg = new SpeechSynthesisUtterance('{safe_text}');
         msg.lang = '{lang_cfg["code"]}';
         msg.rate = 1.0;
         window.speechSynthesis.cancel();
@@ -276,31 +313,118 @@ def trigger_voice_and_haptic(text, dist_level="FAR"):
         </script>
     """, height=0)
 
-# [FIX 1] Drop MiDaS entirely and use lightweight detect_large_obstacle
-def detect_large_obstacle(frame_bgr):
+# --- LAYERED ENVIRONMENT DETECTORS (for surfaces YOLO cannot classify) ---
+
+def detect_wall(frame_bgr):
     """
-    Fast obstacle detection using contour area — no neural network.
-    Detects any large object in center zone occupying > 20% of frame area.
-    Takes < 5ms on CPU.
+    Detects wall-like flat surfaces using texture analysis.
+    Walls have low pixel variance (smooth, uniform) and cover large frame areas.
+    Runs in ~2ms on CPU.
+    """
+    h, w = frame_bgr.shape[:2]
+    # Sample the bottom-center of the frame where walls block the path
+    strip = frame_bgr[int(h*0.3):int(h*0.9), int(w*0.2):int(w*0.8)]
+    gray_strip = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+
+    # Skip if too dark (not a wall, just low light)
+    mean_brightness = np.mean(gray_strip)
+    if mean_brightness < 20:
+        return None
+
+    # Global texture check: walls have low std-dev overall
+    _, std_dev = cv2.meanStdDev(gray_strip)
+    global_std = std_dev[0][0]
+
+    # Fine-grained: count how many 4x4 grid cells are near-uniform
+    cell_h = max(1, strip.shape[0] // 4)
+    cell_w = max(1, strip.shape[1] // 4)
+    uniform_cells = 0
+    for i in range(4):
+        for j in range(4):
+            cell = gray_strip[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+            if cell.size == 0:
+                continue
+            _, cell_std = cv2.meanStdDev(cell)
+            if cell_std[0][0] < 30:
+                uniform_cells += 1
+
+    uniform_ratio = uniform_cells / 16.0
+
+    if uniform_ratio > 0.70 and global_std < 35:
+        return "VERY_CLOSE"
+    elif uniform_ratio > 0.50 and global_std < 50:
+        return "CLOSE"
+    return None
+
+
+def detect_vegetation(frame_bgr):
+    """
+    Detects trees, bushes, and grass using HSV green-range masking.
+    Runs in ~3ms on CPU.
+    """
+    h, w = frame_bgr.shape[:2]
+    # Center zone
+    cx1, cx2 = int(w*0.2), int(w*0.8)
+    cy1, cy2 = int(h*0.1), int(h*0.9)
+    center = frame_bgr[cy1:cy2, cx1:cx2]
+
+    hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+    # Green hue range (covers grass, leaves, bushes)
+    lower_green = np.array([35, 40, 40])
+    upper_green = np.array([85, 255, 255])
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+
+    green_ratio = np.count_nonzero(mask) / float(mask.size)
+
+    if green_ratio > 0.50:
+        return "CLOSE"
+    elif green_ratio > 0.20:
+        return "MEDIUM"
+    return None
+
+
+def detect_obstacle_contour(frame_bgr):
+    """
+    Generic obstacle detection using contour area in the center zone.
+    Catches unknown objects that YOLO missed. Runs in <5ms on CPU.
     """
     h, w = frame_bgr.shape[:2]
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (21, 21), 0)
     edges = cv2.Canny(blurred, 30, 100)
 
-    # Center zone only
     cx1, cx2 = int(w*0.25), int(w*0.75)
     cy1, cy2 = int(h*0.15), int(h*0.85)
     center_edges = edges[cy1:cy2, cx1:cx2]
 
     contours, _ = cv2.findContours(center_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
     center_area = (cx2-cx1) * (cy2-cy1)
     total_contour_area = sum(cv2.contourArea(c) for c in contours if cv2.contourArea(c) > 500)
     ratio = total_contour_area / center_area
 
     if ratio > 0.45:   return "VERY_CLOSE"
     elif ratio > 0.25: return "CLOSE"
+    return None
+
+
+def detect_environment(frame_bgr):
+    """
+    Multi-layered fallback detector for surfaces YOLO cannot classify.
+    Priority order: wall (most dangerous) > obstacle (unknown) > vegetation.
+    Returns (label_en, dist_level) or None.
+    """
+    wall_dist = detect_wall(frame_bgr)
+    if wall_dist:
+        return ("wall", wall_dist)
+
+    obs_dist = detect_obstacle_contour(frame_bgr)
+    if obs_dist:
+        return ("obstacle", obs_dist)
+
+    veg_dist = detect_vegetation(frame_bgr)
+    if veg_dist:
+        return ("tree", veg_dist)
+
     return None
 
 def letterbox(image_bgr, target_size=320): # [FIX 3] Target 320
@@ -345,9 +469,10 @@ class VideoProcessor:
     def __init__(self):
         self.latest_announce = ""
         self.latest_dist = "FAR"
+        self.latest_dir_key = ""   # direction+label fingerprint for spam filter
         self.total_frames = 0
         self.total_dets = 0
-        self.last_inference_time = 0 # [FIX 4]
+        self.last_inference_time = 0
         self.last_results = []
         self.empty_count = 0
 
@@ -362,7 +487,7 @@ class VideoProcessor:
         if now - self.last_inference_time >= INFERENCE_INTERVAL:
             # [FIX 3] Run inference at 320
             lb_img, scale, pad_x, pad_y = letterbox(frame_bgr, target_size=320)
-            results = MODEL(lb_img, verbose=False, conf=0.70, imgsz=320)[0]
+            results = MODEL(lb_img, verbose=False, conf=0.50, imgsz=320)[0]
             
             detections = []
             for box in results.boxes:
@@ -400,25 +525,47 @@ class VideoProcessor:
             cv2.putText(annotated_frame, f"{plabel.upper()} {pdist}", (px1, py1 - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
             
-            # Formulate announce string
+            # Formulate announce string with directional move hints
+            move_hint = ""
+            if pdir == "CENTER" and pdist in ("VERY_CLOSE", "CLOSE"):
+                # Check if adjacent zones are clear to suggest a safer direction
+                left_blocked  = any(d["dir"] == "LEFT"  for d in self.last_results[1:])
+                right_blocked = any(d["dir"] == "RIGHT" for d in self.last_results[1:])
+                if not left_blocked:
+                    move_hint = f". {lang_cfg['move_left']}"
+                elif not right_blocked:
+                    move_hint = f". {lang_cfg['move_right']}"
+                else:
+                    move_hint = f". {lang_cfg['both_blocked']}"
+
             if pdist == "VERY_CLOSE" and pdir == "CENTER":
-                self.latest_announce = f"{lang_cfg['warning']}! {plabel} {lang_cfg['ahead']}, {lang_cfg['very_close']}"
+                self.latest_announce = f"{lang_cfg['warning']}! {plabel} {lang_cfg['ahead']}, {lang_cfg['very_close']}{move_hint}"
+            elif pdist == "CLOSE" and pdir == "CENTER":
+                self.latest_announce = f"{lang_cfg['warning']}! {plabel} {lang_cfg['ahead']}, {lang_cfg['close']}{move_hint}"
             elif pdist == "FAR" and pdir == "CENTER":
                 self.latest_announce = f"{plabel} {lang_cfg['ahead']}"
             else:
-                dir_str = lang_cfg["left"] if pdir == "LEFT" else (lang_cfg["right"] if pdir == "RIGHT" else lang_cfg["ahead"])
+                dir_str  = lang_cfg["left"] if pdir == "LEFT" else (lang_cfg["right"] if pdir == "RIGHT" else lang_cfg["ahead"])
                 dist_str = lang_cfg["very_close"] if pdist == "VERY_CLOSE" else (lang_cfg["close"] if pdist == "CLOSE" else (lang_cfg["nearby"] if pdist == "MEDIUM" else ""))
                 self.latest_announce = f"{plabel} {dir_str}, {dist_str}".strip(", ")
             self.latest_dist = pdist
+            self.latest_dir_key = f"{primary['label_en']}_{pdir}"  # fingerprint for spam filter
             
-        else: # No YOLO detections
-            # [FIX 1] Fast obstacle detection proxy
-            obs_dist = detect_large_obstacle(frame_bgr)
-            if obs_dist:
+        else: # No YOLO detections — run layered environment detector
+            env = detect_environment(frame_bgr)
+            if env:
                 self.empty_count = 0
-                dist_str = lang_cfg["very_close"] if obs_dist == "VERY_CLOSE" else lang_cfg["close"]
-                self.latest_announce = f"{lang_cfg['warning']}! {lang_cfg['obstacle']}, {dist_str}"
-                self.latest_dist = obs_dist
+                env_label_en, env_dist = env
+                env_label = translate_label(env_label_en, selected_lang_name)
+                if env_dist == "VERY_CLOSE":
+                    dist_str = lang_cfg["very_close"]
+                    self.latest_announce = f"{lang_cfg['warning']}! {env_label} {lang_cfg['ahead']}, {dist_str}"
+                elif env_dist == "CLOSE":
+                    dist_str = lang_cfg["close"]
+                    self.latest_announce = f"{lang_cfg['warning']}! {env_label} {lang_cfg['ahead']}, {dist_str}"
+                else:  # MEDIUM — vegetation typically detected at range
+                    self.latest_announce = f"{env_label} {lang_cfg['ahead']}, {lang_cfg['nearby']}"
+                self.latest_dist = env_dist
             else:
                 self.empty_count += 1
                 if self.empty_count >= 10:
@@ -447,7 +594,7 @@ if webrtc_ctx.state.playing:
         if proc.latest_announce:
             st.session_state.frame_count = proc.total_frames
             st.session_state.det_count = proc.total_dets
-            trigger_voice_and_haptic(proc.latest_announce, proc.latest_dist)
+            trigger_voice_and_haptic(proc.latest_announce, proc.latest_dist, proc.latest_dir_key)
             st.session_state.ui_msg = proc.latest_announce.upper()
             st.session_state.ui_msg_class = get_dist_class(proc.latest_dist)
 
