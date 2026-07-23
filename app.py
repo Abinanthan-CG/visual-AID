@@ -268,21 +268,23 @@ def trigger_voice_and_haptic(text, dist_level="FAR", dir_key=""):
 
     now = time.time() * 1000
 
-    # Layer 1 — Global floor: minimum 700ms between ANY speech call
-    MIN_ANY_MS = 700
+    # Layer 1 — Global floor: minimum 1000ms between ANY speech call
+    MIN_ANY_MS = 1000
     if (now - st.session_state.last_speak_time) < MIN_ANY_MS:
         return
 
-    # Layer 2 — Direction-key debounce: suppress if same direction+label within 2.5s
+    # Layer 2 — Direction-key debounce: suppress if same direction+label within 4s
     # This stops "car on your right, close" / "car on your right, nearby" spam
-    DIR_DEBOUNCE_MS = 2500
+    DIR_DEBOUNCE_MS = 4000
     if dir_key and dir_key == st.session_state.last_dir_key:
         if (now - st.session_state.last_dir_time) < DIR_DEBOUNCE_MS:
             return
 
     # Layer 3 — Exact text debounce
-    DEBOUNCE_MS = 2000
-    URGENT_DEBOUNCE_MS = 800
+    # NOTE: URGENT is intentionally the SAME as normal — a repeating warning
+    # every 800ms is far worse UX than once every 3.5s for a blind user.
+    DEBOUNCE_MS = 3500
+    URGENT_DEBOUNCE_MS = 3500
     current_debounce = URGENT_DEBOUNCE_MS if dist_level == "VERY_CLOSE" else DEBOUNCE_MS
     if safe_text == st.session_state.last_spoken and (now - st.session_state.last_speak_time) < current_debounce:
         return
@@ -566,6 +568,7 @@ class VideoProcessor:
                 else:  # MEDIUM — vegetation typically detected at range
                     self.latest_announce = f"{env_label} {lang_cfg['ahead']}, {lang_cfg['nearby']}"
                 self.latest_dist = env_dist
+                self.latest_dir_key = f"env_{env_label_en}"  # so Layer 2 debounce catches env repeats
             else:
                 self.empty_count += 1
                 if self.empty_count >= 10:
